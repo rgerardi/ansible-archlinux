@@ -1,0 +1,316 @@
+- name: Install Archlinux
+  hosts: localhost
+  gather_facts: yes
+
+  vars_files:
+    - vars.yaml
+
+  tasks:
+  - name: Ensure the clock is accurate
+    command: timedatectl set-ntp true
+
+  - name: Create boot partition
+    parted:
+      device: "{{ disk_name }}"
+      number: "{{ boot_part }}"
+      state: present
+      part_end: "{{ boot_part_size }}"
+
+  - name: Create a ext2 filesystem for boot
+    filesystem:
+      fstype: ext2
+      dev: "{{ disk_name }}{{ boot_part }}"
+
+  - name: Create a new primary partition for LVM
+    parted:
+      device: "{{ disk_name }}"
+      number: "{{ lvm_part }}"
+      flags: [ lvm ]
+      state: present
+      part_start: "{{ boot_part_size }}"
+
+  - name: Create VG rootvg
+    lvg:
+      vg: rootvg
+      pvs: "{{ disk_name }}{{ lvm_part }}"
+
+  - name: Create and enable swap
+    block:
+    - name: Create swap LV
+      lvol:
+        vg: rootvg
+        lv: lv_swap
+        size: "{{ swap_size }}"
+
+    - name: Format swap device
+      command: mkswap /dev/rootvg/lv_swap
+      when: ansible_swaptotal_mb < 1
+
+    - name: activate swap device
+      command: swapon /dev/rootvg/lv_swap
+      when: ansible_swaptotal_mb < 1
+    when: enable_swap | bool
+
+  - name: Create home partition if required
+    block:
+    - name: Create home LV
+      lvol:
+        vg: rootvg
+        lv: lv_home
+        size: "{{ home_fs_size }}"
+    - name: Create a ext4 filesystem for home
+      filesystem:
+        fstype: ext4
+        dev: /dev/rootvg/lv_home
+    when: home_fs | bool
+
+  - name: Create root LV
+    lvol:
+      vg: rootvg
+      lv: lv_root
+      size: 100%FREE
+      shrink: no
+
+  - name: Create a ext4 filesystem for root
+    filesystem:
+      fstype: ext4
+      dev: /dev/rootvg/lv_root
+
+  - name: Mount root
+    mount:
+      path: /mnt
+      src: /dev/rootvg/lv_root
+      fstype: ext4
+      state: mounted
+
+  - name: Ensure boot mount point exists
+    file:
+      path: /mnt/boot
+      state: directory
+
+  - name: Mount boot
+    mount:
+      path: /mnt/boot
+      src: "{{ disk_name }}{{ boot_part }}"
+      fstype: ext2
+      state: mounted
+
+  - name: Mount home if required
+    block:
+    - name: Ensure home mount point exists
+      file:
+        path: /mnt/home
+        state: directory
+
+    - name: Mount home
+      mount:
+        path: /mnt/home
+        src: /dev/rootvg/lv_home
+        fstype: ext4
+        state: mounted
+    when: home_fs | bool
+
+  - name: Install reflector
+    pacman:
+      name: reflector
+      state: installed
+
+  - name: Select best 5 mirrors
+    command: reflector --threads 2 -l 5 -f 5 --protocol https --country "{{ mirror_country }}" --sort rate --save /etc/pacman.d/mirrorlist
+
+  - name: Pacstrap new system
+    command: pacstrap /mnt {{ pacstrap_pkg }} {{ kernel }} linux-firmware
+    args:
+      creates: /mnt/etc
+
+  - name: Generate fstab
+    shell: genfstab -U /mnt >> /mnt/etc/fstab
+
+  - name: Define new host for chroot
+    add_host:
+      name: /mnt
+      groups: local_chroot
+      ansible_connection: chroot
+      ansible_chroot_exe: arch-chroot
+
+
+- name: Config Archlinux
+  hosts: local_chroot
+  gather_facts: no
+
+  vars_files:
+    - vars.yaml
+
+  tasks:
+  - name: Ensure zoneinfo is accessible before continuing
+    wait_for:
+      path: /usr/share/zoneinfo/{{ timezone }}
+      timeout: 60
+      delay: 10
+      sleep: 5
+
+  - name: Set timezone
+    file:
+      src: /usr/share/zoneinfo/{{ timezone }}
+      dest: /etc/localtime
+      state: link
+
+  - name: Ensure the clock is accurate
+    command: timedatectl set-ntp true
+
+  - name: Run hwclock
+    command: hwclock --systohc
+    args:
+      creates: /etc/adjtime
+
+  - name: Ensure locales defined in locale.gen
+    lineinfile:
+      path: /etc/locale.gen
+      regexp: "^#{{ item }}"
+      line: "{{ item }}"
+    loop: "{{ locales }}"
+
+  - name: Generate locales
+    command: locale-gen
+    register: localegen_results
+    failed_when: "'Generation complete' not in localegen_results.stdout"
+
+  - name: Create the locale.conf file
+    copy:
+      dest: /etc/locale.conf
+      content: "LANG={{ locales[0].split(' ')[0] }}\n"
+      owner: root
+      group: root
+      mode: 0644
+
+  - name: Create the /etc/hostname file
+    copy:
+      dest: /etc/hostname
+      content: "{{ system_hostname | default('localhost') }}\n"
+      owner: root
+      group: root
+      mode: 0644
+
+  - name: Create the /etc/hosts file
+    copy:
+      dest: /etc/hosts
+      content: |
+        127.0.0.1	localhost
+        ::1		localhost
+        127.0.1.1	{{ system_hostname | default('localhost') }}.localdomain	{{ system_hostname | default('localhost') }}
+      owner: root
+      group: root
+      mode: 0644
+
+  - name: Install extra packages
+    pacman:
+      name: "{{ extra_pkg }}"
+      state: installed
+      update_cache: yes
+
+  - name: Enable required services
+    service:
+      name: "{{ item }}"
+      state: stopped
+      enabled: yes
+    loop: "{{ svc_enble }}"
+
+  - name: Ensure mkinitcpio.conf for LVM
+    lineinfile:
+      path: /etc/mkinitcpio.conf
+      regexp: '^HOOKS='
+      line: 'HOOKS="base udev autodetect modconf block lvm2 filesystems keyboard fsck"'
+
+  - name: Generate initramfs
+    command: mkinitcpio -P
+
+  - name: Add admin user
+    user:
+      name: "{{ admin_user.name }}"
+      shell: /bin/bash
+      comment: "{{ admin_user.full_name | default('') }}"
+      group: users
+      groups: wheel
+      append: yes
+      password: "{{ admin_user.password | password_hash('sha512') }}"
+
+  - name: Update root password
+    user:
+      name: root
+      password: "{{ root_password | password_hash('sha512') }}"
+      update_password: always
+
+  - name: Configure sudo
+    lineinfile:
+      path: /etc/sudoers
+      regexp: "^#.*wheel ALL=\\(ALL\\) ALL$"
+      line: "%wheel ALL=(ALL) ALL"
+      validate: /usr/sbin/visudo -cf %s
+
+  - name: Configure static network if required
+    copy:
+      dest: /etc/NetworkManager/system-connections/{{ item.name }}
+      mode: 0600
+      owner: root
+      group: root
+      content: |
+        [connection]
+        id={{ item.name }}
+        type=ethernet
+        interface-name={{ item.device }}
+        autoconnect={{ item.autoconnect | default('true') }}
+        autoconnect-priority={{ item.autoconnect_priority | default('0') }}
+        permissions=
+        
+        [ethernet]
+        mac-address-blacklist=
+        
+        [ipv4]
+        address1={{ item.ip }},{{ item.gateway }}
+        dns={{ item.dns }};
+        dns-search={{ item.dns_search | default('') }}
+        method=manual
+        
+        [ipv6]
+        addr-gen-mode=stable-privacy
+        dns-search=
+        ip6-privacy=0
+        method=auto
+        
+        [proxy]
+    loop: "{{ connections }}"
+    when: "connections | default([]) | length > 0"
+
+  - name: Install grub
+    command: grub-install --target=i386-pc "{{ disk_name }}"
+
+  - name: Generate grub config
+    command: grub-mkconfig -o /boot/grub/grub.cfg
+
+
+- name: Prepare for system reboot
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+  - name: Copy installation files and logs to new machine
+    copy:
+      src: "./{{ item }}"
+      dest: /mnt/root
+      remote_src: yes
+      owner: root
+      mode: 0600
+    loop:
+      - ansible.cfg
+      - hosts
+      - vars.yaml
+      - site.yaml
+      - ansible.log
+      - install.sh
+    when:
+      - save_config | default("yes") | bool
+
+  - name: Unmount all partitions
+    command: umount -R /mnt
+    args:
+      removes: /mnt
