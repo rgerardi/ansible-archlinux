@@ -13,7 +13,6 @@ locales:
   - en_CA ISO-8859-1
 extra_pkg:
   - networkmanager
-  - nm-connection-editor
   - lvm2
   - openssh
   - vim
