@@ -43,3 +43,20 @@ Options:
   -h                    Show this help message and exit
 ```
 
+## Customizing Options
+You can customize options interactively during the install by providing the `-c` flag:
+```bash
+./install.sh -s newhost01 -c
+```
+
+The install script opens the default editor allowing you to customize any variables in the `vars.yaml` file prior to executing the playbook.
+
+You can also override specific variables directly using the `-e` flag. For example, to install with the default options but using the LTS Linux kernel, use:
+```bash
+./install.sh -s newhost01 -e kernel=linux-lts
+```
+
+You can use `-e` as many time as you want. To disable swap in addition to using the LTS kernel, use:
+```bash
+./install.sh -s newhost01 -e kernel=linux-lts -e enable_swap=no
+```
