@@ -118,6 +118,16 @@
   - name: Select best 5 mirrors
     command: reflector --threads 2 -l 5 -f 5 --protocol https --country "{{ mirror_country }}" --sort rate --save /etc/pacman.d/mirrorlist
 
+  - name: Ensure user specified mirror in mirrorlist
+    lineinfile:
+      path: /etc/pacman.d/mirrorlist
+      line: "Server = {{ user_mirror }}"
+      insertbefore: '^Server'
+      firstmatch: yes
+    when:
+      - user_mirror is defined
+      - user_mirror | length > 0
+
   - name: Pacstrap new system
     command: pacstrap /mnt {{ pacstrap_pkg }} {{ kernel }} linux-firmware
     args:

@@ -5,8 +5,8 @@ swap_size: "2g"
 home_fs: yes
 home_fs_size: 2g
 mirror_country: Canada
+user_mirror: ""
 kernel: linux
-pacstrap_pkg: "base base-devel python python-yaml python-paramiko python-jinja"
 timezone: America/Toronto
 locales:
   - en_CA.UTF-8 UTF-8
@@ -38,7 +38,8 @@ root_password: "ansible"
 #  dns: 192.168.122.1
 #  dns_search: example.com
 
-## This variables should not require changing but do so if needed
+## These variables should not require changing but do so if needed
+pacstrap_pkg: "base base-devel python python-yaml python-paramiko python-jinja"
 boot_part: "1"
 lvm_part: "2"
 boot_part_size: "512MiB"
