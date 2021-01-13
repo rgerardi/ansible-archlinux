@@ -55,6 +55,8 @@ while getopts ":s:e:u:cd" opt; do
   esac
 done
 
+mount -o remount,size=512M /run/archiso/cowspace
+
 /usr/bin/pacman -Sy ansible --noconfirm
 
 if [ ! -f ${playbook} ]; then

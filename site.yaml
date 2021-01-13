@@ -116,7 +116,7 @@
       state: installed
 
   - name: Select best 5 mirrors
-    command: reflector --threads 2 -l 5 -f 5 --protocol https --country "{{ mirror_country }}" --sort rate --save /etc/pacman.d/mirrorlist
+    command: reflector -l 5 -f 5 --protocol https --country "{{ mirror_country }}" --sort rate --save /etc/pacman.d/mirrorlist
 
   - name: Ensure user specified mirror in mirrorlist
     lineinfile:
